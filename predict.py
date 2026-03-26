@@ -121,7 +121,7 @@ with torch.no_grad():
 
 # Sau khi tính toán xong preds ở cuối file:
 print("\n--- Classification Report ---")
-print(classification_report(df.label_id.values, preds, target_names=["Bình thường", "Gây hấn", "Tiêu cực"]))
+print(classification_report(df.label_id.values, preds, target_names=["Bình thường", "Gây hấn", "Tiêu cực"], digits=4))
 
 # --- Phần vẽ Confusion Matrix ---
 def plot_confusion_matrix(y_true, y_pred, model_type):
