@@ -133,7 +133,7 @@ def plot_confusion_matrix(y_true, y_pred, model_type):
     plt.xlabel('Dự đoán (Predicted)')
     plt.ylabel('Thực tế (Actual)')
     plt.title(f'Confusion Matrix - {model_type.upper()}')
-    
+    plt.tight_layout()
     # Lưu ảnh vào thư mục SAVE_DIR để bạn có thể xem lại sau
     plt.savefig(f"{config.SAVE_DIR}/{model_type}_confusion_matrix.png")
     plt.show()
