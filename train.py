@@ -107,7 +107,7 @@ def main():
         char_to_idx
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True)
+    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, drop_last=True)
     dev_loader = DataLoader(dev_dataset, batch_size=config.BATCH_SIZE)
 
     # ===== Chọn model =====
@@ -139,8 +139,7 @@ def main():
 
     # ===== Loss function =====
     criterion = nn.CrossEntropyLoss(
-        weight=class_weights,
-        label_smoothing=0.05
+        weight=class_weights
     )
 
     # ===== Optimizer với Differential Learning Rates =====
@@ -152,7 +151,7 @@ def main():
         custom_params = [p for n, p in model.named_parameters() if "phobert." not in n]
         optimizer = optim.AdamW([
             {'params': phobert_params, 'lr': config.LR},      # 2e-5 (Fine-tuning)
-            {'params': custom_params, 'lr': 5e-4}             # 5e-4 (Học nhanh các lớp mới)
+            {'params': custom_params, 'lr': 5e-5}             # 5e-5 (Học nhanh các lớp mới)
         ], weight_decay=0.01)
         print(f"Initialized Hybrid Optimizer: PhoBERT LR={config.LR}, Custom LR=5e-4")
     else:
@@ -161,7 +160,7 @@ def main():
 
     # ===== Warmup Scheduler =====
     num_training_steps = len(train_loader) * config.EPOCHS
-    num_warmup_steps = int(0.1 * num_training_steps)
+    num_warmup_steps = int(0.05 * num_training_steps)
 
     scheduler = get_linear_schedule_with_warmup(optimizer,
     num_warmup_steps=num_warmup_steps,
