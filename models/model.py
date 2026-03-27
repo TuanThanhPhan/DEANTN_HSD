@@ -24,12 +24,18 @@ class HybridHateSpeechModel(nn.Module):
         self.char_fc = nn.Sequential(
             nn.Linear(256, 128),
             nn.LayerNorm(128),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.Dropout(0.1)
         )
 
         # ===== Fusion =====
-        self.fusion_fc = nn.Linear(256 + 128, 256)
-        self.fusion_dropout = nn.Dropout(0.1)
+        # Input = 256 (BERT) + 128 (Char) = 384
+        self.fusion_fc = nn.Sequential(
+            nn.Linear(256 + 128, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+            nn.Dropout(0.2)
+        )
 
         # ===== BiLSTM =====
         self.bilstm = nn.LSTM(
@@ -43,71 +49,56 @@ class HybridHateSpeechModel(nn.Module):
         self.residual_proj = nn.Linear(256, hidden_dim * 2)
 
         self.post_lstm_norm = nn.LayerNorm(hidden_dim * 2)
-        self.post_lstm_dropout = nn.Dropout(0.2)
+        self.post_lstm_dropout = nn.Dropout(0.3)
 
         # ===== Bộ phân lớp =====
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim * 4, 64),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(64, 3)
+            nn.Linear(64, 3) # 3 nhãn
         )
 
     def forward(self, input_ids, attention_mask, char_input):
         # --- PhoBERT Branch ---
         outputs = self.phobert(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
-        # Concat 3 lớp cuối 
-        bert_out = torch.cat(outputs.hidden_states[-3:], dim=-1) 
+        all_layers = outputs.hidden_states
+        bert_out = torch.cat((all_layers[-1], all_layers[-2], all_layers[-3]), dim=-1)
         bert_out = self.dropout_bert(bert_out)
         bert_out = self.bert_norm(bert_out)
-        bert_out = torch.relu(self.reduce_phobert(bert_out)) # Thêm ReLU cho đồng bộ [B, S, 256]
+        bert_out = torch.relu(self.reduce_phobert(bert_out)) # [B, S, 256]
 
         # --- CharCNN Branch ---
-        B, S, L = char_input.shape
-        char_x = self.char_embedding(char_input).view(B * S, L, -1).transpose(1, 2)
-        
+        B, S, W = char_input.shape
+        char_in = char_input.view(-1, W) 
+        char_emb = self.char_embedding(char_in).transpose(1, 2)
+
         char_conv_outs = []
         for conv in self.convs:
-            c = torch.relu(conv(char_x))
-            c, _ = torch.max(c, dim=2) # Max-over-time pooling
+            c = torch.relu(conv(char_emb))
+            c = torch.max(c, dim=2)[0]
             char_conv_outs.append(c)
         
-        char_feat = torch.cat(char_conv_outs, dim=1) # [B*S, 256]
+        char_feat = torch.cat(char_conv_outs, dim=1) 
         char_feat = self.char_fc(char_feat).view(B, S, 128) # [B, S, 128]
 
-        char_feat = 0.3 * char_feat
+        # --- Fusion ---
+        combined = torch.cat([bert_out, char_feat], dim=-1) 
+        combined = self.fusion_fc(combined) # Nén về 256 và chuẩn hóa
 
-        # ===== Fusion =====
-        combined = torch.cat([bert_out, char_feat], dim=-1)
-        combined = self.fusion_fc(combined)
-        combined = self.fusion_dropout(combined)
-
-        # ===== RESIDUAL GIỮ BERT =====
-        combined = combined + bert_out
-
-         # ===== BiLSTM =====
+        # --- BiLSTM & Residual ---
         lstm_out, _ = self.bilstm(combined)
-
-        residual = self.residual_proj(combined)
-        lstm_out = lstm_out + residual
-
+        lstm_out = lstm_out + self.residual_proj(combined)
         lstm_out = self.post_lstm_norm(lstm_out)
         lstm_out = self.post_lstm_dropout(lstm_out)
         
-        # ================= Pooling =================
-        # Mean pooling (masked)
+        # --- Pooling (Mean + Max) ---
         mask = attention_mask.unsqueeze(-1).float()
-        sum_embeddings = torch.sum(lstm_out * mask, dim=1)
-        sum_mask = torch.clamp(mask.sum(dim=1), min=1e-9)
-        mean_pooled = sum_embeddings / sum_mask
-        # Max pooling (masked)
+        mean_pooled = torch.sum(lstm_out * mask, dim=1) / torch.clamp(mask.sum(dim=1), min=1e-9)
+        
         mask_bool = attention_mask.unsqueeze(-1).bool()
-        lstm_masked = lstm_out.masked_fill(~mask_bool, -1e4)
-        max_pooled = torch.max(lstm_masked, dim=1).values
-        # concat
-        pooled = torch.cat([mean_pooled, max_pooled], dim=-1)
+        max_pooled = torch.max(lstm_out.masked_fill(~mask_bool, -1e4), dim=1).values
+        
+        pooled = torch.cat([mean_pooled, max_pooled], dim=-1) # [B, 512]
 
-        # ================= Classifier =================
-        logits = self.classifier(pooled)
-
-        return logits
+        return self.classifier(pooled)
