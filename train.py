@@ -16,7 +16,6 @@ from torch.utils.tensorboard import SummaryWriter
 import config
 from seed import set_seed
 
-from utils.cleantext import clean_text_pipeline
 from utils.dataloader import ViHSDDataset
 from utils.char_vocab import build_char_vocab
 
@@ -69,39 +68,42 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
 
-    train_df = pd.read_csv(config.TRAIN_PATH)
+    # ===== LOAD DỮ LIỆU ĐÃ LÀM SẠCH TỪ BƯỚC MERGE =====
+    print("--- Loading pre-cleaned datasets ---")
+    train_df = pd.read_csv(config.TRAIN_PATH) 
     dev_df = pd.read_csv(config.DEV_PATH)
 
-    train_df["free_text"] = train_df["free_text"].apply(clean_text_pipeline)
-    dev_df["free_text"] = dev_df["free_text"].apply(clean_text_pipeline)
+    # CHỈ ÉP KIỂU, KHÔNG CHẠY LẠI PIPELINE
+    train_texts = train_df["free_text"].astype(str).values
+    train_labels = train_df["label_id"].values
 
-    # ===== build char vocab =====
+    dev_texts = dev_df["free_text"].astype(str).values
+    dev_labels = dev_df["label_id"].values
+
+    # ===== BUILD/LOAD CHAR VOCAB =====
     vocab_path = os.path.join(config.SAVE_DIR, config.CHAR_VOCAB_FILE)
     if os.path.exists(vocab_path):
-        print("Loading char vocab...")
+        print("Loading existing char vocab...")
         with open(vocab_path, "rb") as f:
             char_to_idx = pickle.load(f)
-
     else:
-
-        print("Building char vocab...")
-
-        char_to_idx = build_char_vocab(train_df.free_text.values)
-
+        print("Building new char vocab from cleaned data...")
+        char_to_idx = build_char_vocab(train_texts)
         with open(vocab_path, "wb") as f:
             pickle.dump(char_to_idx, f)
 
+    # ===== DATASET & DATALOADER =====
     train_dataset = ViHSDDataset(
-        train_df.free_text.values,
-        train_df.label_id.values,
+        train_texts,
+        train_labels,
         tokenizer,
         config.MAX_LEN,
         char_to_idx
     )
 
     dev_dataset = ViHSDDataset(
-        dev_df.free_text.values,
-        dev_df.label_id.values,
+        dev_texts,
+        dev_labels,
         tokenizer,
         config.MAX_LEN,
         char_to_idx
@@ -110,64 +112,56 @@ def main():
     train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, drop_last=True)
     dev_loader = DataLoader(dev_dataset, batch_size=config.BATCH_SIZE)
 
-    # ===== Chọn model =====
-    if args.model_type == "phobert":
-        model = PhoBERTModel(args.model_name)
-    elif args.model_type == "visobert":
-        model = ViSoBERTModel(args.model_name)
-    elif args.model_type == "hybrid":
+    # ===== KHỞI TẠO MODEL =====
+    if args.model_type == "hybrid":
         model = HybridHateSpeechModel(
-        args.model_name,
-        len(char_to_idx) + 2
-    )
+            args.model_name,
+            len(char_to_idx) + 2 # +2 cho PAD và UNK
+        )
+    elif args.model_type == "phobert":
+        model = PhoBERTModel(args.model_name)
+    else:
+        model = ViSoBERTModel(args.model_name)
 
     model.to(device)
 
-    # ===== Compute class weights =====
-    labels = train_df.label_id.values
-
+   # ===== WEIGHTS & OPTIMIZER =====
     class_weights = compute_class_weight(
         class_weight="balanced",
-        classes=np.unique(labels),
-        y=labels
+        classes=np.unique(train_labels),
+        y=train_labels
     )
-
-    class_weights = torch.tensor(
-        class_weights,
-        dtype=torch.float
-    ).to(device)
+    class_weights = torch.tensor(class_weights, dtype=torch.float).to(device)
 
     # ===== Loss function =====
-    criterion = nn.CrossEntropyLoss(
-        weight=class_weights
-    )
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    # ===== Optimizer =====
+    # Thiết lập Optimizer với LR khác nhau cho BERT và các lớp tùy chỉnh
     if args.model_type == "hybrid":
         phobert_params = list(model.phobert.parameters())
         custom_params = [p for n, p in model.named_parameters() if "phobert." not in n]
         optimizer = optim.AdamW([
-            {'params': phobert_params, 'lr': config.LR},      # 2e-5
-            {'params': custom_params, 'lr': 5e-5}             # 5e-5
+            {'params': phobert_params, 'lr': config.LR},      
+            {'params': custom_params, 'lr': 5e-5}             
         ], weight_decay=0.01)
     else:
-        # Tách BERT và các lớp Linear/Norm mới của baseline để dùng LR tương đương Hybrid
-        bert_param_name = "phobert." if args.model_type == "phobert" else "visobert."
-        bert_params = [p for n, p in model.named_parameters() if bert_param_name in n]
-        custom_params = [p for n, p in model.named_parameters() if bert_param_name not in n]
-        
+        # Baseline logic
+        bert_prefix = "phobert." if args.model_type == "phobert" else "visobert."
+        bert_params = [p for n, p in model.named_parameters() if bert_prefix in n]
+        custom_params = [p for n, p in model.named_parameters() if bert_prefix not in n]
         optimizer = optim.AdamW([
-            {'params': bert_params, 'lr': config.LR},         # 2e-5
-            {'params': custom_params, 'lr': 5e-5}             # 5e-5 (Đồng bộ với Hybrid)
+            {'params': bert_params, 'lr': config.LR},
+            {'params': custom_params, 'lr': 5e-5}
         ], weight_decay=0.01)
 
     # ===== Warmup Scheduler =====
     num_training_steps = len(train_loader) * config.EPOCHS
     num_warmup_steps = int(0.05 * num_training_steps)
 
-    scheduler = get_linear_schedule_with_warmup(optimizer,
-    num_warmup_steps=num_warmup_steps,
-    num_training_steps=num_training_steps)
+    scheduler = get_linear_schedule_with_warmup(
+                optimizer,
+                num_warmup_steps=num_warmup_steps,
+                num_training_steps=num_training_steps)
 
     # Truyền args.model_type vào Trainer
     trainer = Trainer(model, optimizer, criterion, device, scheduler, args.model_type)

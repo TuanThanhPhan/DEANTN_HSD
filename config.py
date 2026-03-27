@@ -10,4 +10,6 @@ TEST_PATH = "data/processed/final_test.csv"
 
 SAVE_DIR = "/content/drive/MyDrive/Checkpoints"
 
+DATACNTT_PATH = f"{SAVE_DIR}/DataCNTT.xlsx"
+
 CHAR_VOCAB_FILE = "char_vocab.pkl"

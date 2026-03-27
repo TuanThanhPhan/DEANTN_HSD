@@ -35,9 +35,10 @@ class ViHSDDataset(Dataset):
 
         char_input = []
         for token in tokens:
-            # Chuyển từng token thành char_ids
-            ids = [self.char_to_idx.get(c, 1) for c in token[:self.max_char_per_word]]
-            # Padding cho đủ độ dài ký tự trong 1 từ
+            # Loại bỏ dấu gạch dưới của ViTokenizer (ví dụ: học_sinh -> học sinh) 
+            # để CharCNN học đặc trưng ký tự thuần túy
+            clean_token = token.replace("_", "")
+            ids = [self.char_to_idx.get(c, 1) for c in clean_token[:self.max_char_per_word]]
             ids += [0] * (self.max_char_per_word - len(ids))
             char_input.append(ids)
             

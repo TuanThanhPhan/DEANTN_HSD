@@ -8,6 +8,10 @@ def build_char_vocab(texts):
     for text in texts:
         unique_chars.update(list(str(text)))
 
+    # ÉP BUỘC thêm các ký tự lách luật và emoji quan trọng
+    extra_chars = list("._-*!?,") + ["🍎", "🍏", "🍌", "🤡", "🚩", "🤮", "💩", "🖕"]
+    unique_chars.update(extra_chars)
+
     # tạo mapping ký tự -> index
     char_to_idx = {
         char: i + 2
