@@ -10,8 +10,7 @@ class HybridHateSpeechModel(nn.Module):
         self.phobert = AutoModel.from_pretrained(phobert_path)
         self.dropout_bert = nn.Dropout(0.1) 
         self.bert_norm = nn.LayerNorm(2304)
-        # Hạ chiều PhoBERT từ 2304 xuống 256 
-        self.reduce_phobert = nn.Linear(2304, 256)
+        self.reduce_phobert = nn.Linear(2304, 256) # Hạ chiều PhoBERT từ 2304 xuống 256 
 
         # ===== CharCNN =====
         self.char_embedding = nn.Embedding(char_vocab_size, 50, padding_idx=0)
@@ -32,7 +31,6 @@ class HybridHateSpeechModel(nn.Module):
         self.input_dim = 256 + 128
 
         # ===== 2. BiLSTM Layer =====
-        # Sơ đồ hiển thị lớp này hoạt động trên vector nối.
         self.bilstm = nn.LSTM(
             input_size=self.input_dim,
             hidden_size=hidden_dim,
@@ -43,9 +41,8 @@ class HybridHateSpeechModel(nn.Module):
         self.post_lstm_dropout = nn.Dropout(0.2)
 
         # ===== 3. Pre-Classifier Fully Connected Layer (FC Layer) =====
-        # Sơ đồ hiển thị một Lớp FC rõ ràng sau BiLSTM.
-        # Chúng tôi sẽ áp dụng pooling trước để tạo ra một vector đại diện toàn câu [B, 512d]
-        self.pooled_dim = 256 * 2 # hidden_dim * 4 (mean + max pooling) = 512d
+        # Áp dụng pooling trước để tạo ra một vector đại diện toàn câu [B, 512]
+        self.pooled_dim = 256 * 2 # hidden_dim * 4 (mean + max pooling) = 512
         self.pre_classifier_fc = nn.Linear(self.pooled_dim, 128)
         self.fc_dropout = nn.Dropout(0.3)
 
@@ -79,11 +76,9 @@ class HybridHateSpeechModel(nn.Module):
         char_feat = char_feat * mask_expanded
 
         # --- 1. Naive Feature Fusion ---
-        # Nối đặc trưng thô đúng như sơ đồ hiển thị
         concat_feat = torch.cat([bert_out, char_feat], dim=-1) # [B, S, 384d]
 
         # --- 2. BiLSTM Layer ---
-        # Học ngữ cảnh trên vector nối thô
         lstm_out, _ = self.bilstm(concat_feat) # Output: [B, S, 256d]
         lstm_out = self.post_lstm_norm(lstm_out)
         lstm_out = lstm_out * mask_expanded
@@ -100,14 +95,12 @@ class HybridHateSpeechModel(nn.Module):
         lstm_out_masked = lstm_out.masked_fill(~mask_bool, -1e9)
         max_pooled = torch.max(lstm_out_masked, dim=1)[0]
 
-        # Nối lại thành vector 512 chiều [B, 512d]
+        # Nối lại thành vector 512 chiều [B, 512]
         pooled = torch.cat([mean_pooled, max_pooled], dim=-1)
 
         # --- 3. Pre-Classifier Fully Connected Layer ---
-        # Sơ đồ hiển thị Lớp FC này hoạt động trên vectorpooled (512d -> 128d)
         fc_out = torch.relu(self.pre_classifier_fc(pooled))
         fc_out = self.fc_dropout(fc_out)
 
         # --- 4. Final Classification Layer ---
-        # Phân loại cuối cùng (128d -> 3 labels)
         return self.classifier(fc_out)

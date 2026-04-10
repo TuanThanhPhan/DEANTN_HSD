@@ -213,7 +213,6 @@ def main():
         print("\n" + "="*60)
         print(f"EPOCH {epoch+1}/{config.EPOCHS} SUMMARY")
         print("-" * 60)
-        print(f"• Train Loss:  {train_loss:.4f}")
         print(f"• Train loss: {train_loss:.4f} | Val loss: {val_loss:.4f}")
         print(f"• Dev F1: {dev_f1:.4f}")
         print(f"• Dev F1 (Lớp): Bình thường: {f1_0:.4f} | Gây hấn: {f1_1:.4f} | Tiêu cực: {f1_2:.4f}")
@@ -233,7 +232,7 @@ def main():
             columns=target_names
         )
         print("-" * 60)
-        print("[CONFUSION MATRIX - REPORT]")
+        print("[CONFUSION MATRIX]")
         print(cm_df)
         print("-" * 60)
 
