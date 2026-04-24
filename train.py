@@ -15,7 +15,6 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from transformers import get_linear_schedule_with_warmup
 from sklearn.utils.class_weight import compute_class_weight
-from torch.utils.tensorboard import SummaryWriter
 
 import config
 from seed import set_seed
@@ -62,10 +61,6 @@ def main():
     # Tạo thư mục lưu Confusion Matrix cho model tương ứng
     cm_folder = os.path.join(config.CM_DIR, args.model_type)
     os.makedirs(cm_folder, exist_ok=True)
-
-    # Khởi tạo TensorBoard Writer
-    log_dir = os.path.join(config.SAVE_DIR, "logs", args.model_type)
-    writer = SummaryWriter(log_dir=log_dir)
 
     last_ckpt = os.path.join(config.SAVE_DIR, f"{args.model_type}_last.pt")
     best_ckpt = os.path.join(config.SAVE_DIR, f"{args.model_type}_best.pt")
@@ -116,8 +111,8 @@ def main():
         char_to_idx
     )
 
-    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, drop_last=True)
-    dev_loader = DataLoader(dev_dataset, batch_size=config.BATCH_SIZE)
+    train_loader = DataLoader(train_dataset, batch_size=config.BATCH_SIZE, shuffle=True, drop_last=True, num_workers=2)
+    dev_loader = DataLoader(dev_dataset, batch_size=config.BATCH_SIZE, num_workers=2)
 
     # ===== KHỞI TẠO MODEL =====
     if args.model_type == "hybrid":
@@ -164,30 +159,48 @@ def main():
                 num_warmup_steps=num_warmup_steps,
                 num_training_steps=num_training_steps)
 
-    # Truyền args.model_type vào Trainer
-    trainer = Trainer(model, optimizer, criterion, device, scheduler, args.model_type)
-
-     # ===== resume training =====
+    # ===== RESUME TRAINING =====
     start_epoch = 0
     best_f1 = 0
     patience = 0 # Khởi tạo patience mặc định
 
     if args.resume and os.path.exists(last_ckpt):
-
         print("Loading checkpoint...")
-
         checkpoint = torch.load(last_ckpt, map_location=device)
 
         model.load_state_dict(checkpoint["model_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-
+        
+        # LOAD TRAINING STATE TRƯỚC ĐỂ LẤY START_EPOCH CHUẨN
         start_epoch = checkpoint["epoch"] + 1
         best_f1 = checkpoint["best_f1"]
-        # Load patience từ checkpoint để không bị mất Early Stopping
         patience = checkpoint.get("patience", 0)
-
+        
         print(f"Resumed from epoch: {start_epoch}, Current Best F1: {best_f1:.4f}, Patience: {patience}")
+
+        # XỬ LÝ SCHEDULER DỰA TRÊN START_EPOCH ĐÃ LOAD
+        if "scheduler_state_dict" in checkpoint:
+            remaining_epochs = config.EPOCHS - start_epoch
+            if remaining_epochs > 0:
+                remaining_steps = len(train_loader) * remaining_epochs
+                num_warmup_steps = int(0.1 * remaining_steps)
+                
+                # Khởi tạo lại scheduler mới
+                scheduler = get_linear_schedule_with_warmup(
+                    optimizer,
+                    num_warmup_steps=num_warmup_steps,
+                    num_training_steps=remaining_steps
+                )
+                print(f"Scheduler re-initialized for remaining {remaining_epochs} epochs.")
+            else:
+                print("Training epochs completed.")
+        else:
+            print("No scheduler state, continuing...")
+            
+        print(f"Scheduler synchronized. Current LR: {optimizer.param_groups[0]['lr']:.2e}")
+
+    # ===== KHỞI TẠO TRAINER =====
+    trainer = Trainer(model, optimizer, criterion, device, scheduler, args.model_type)
 
     # ===== training loop =====
     for epoch in range(start_epoch, config.EPOCHS):
@@ -238,7 +251,7 @@ def main():
 
         # Vẽ và lưu ảnh Confusion Matrix vào Drive
         cm = confusion_matrix(labels_all, preds)
-        plt.figure(figsize=(8, 6))
+        plt.figure(figsize=(4, 4))
         sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                     xticklabels=["Bình thường", "Gây hấn", "Tiêu cực"],
                     yticklabels=["Bình thường", "Gây hấn", "Tiêu cực"])
@@ -252,10 +265,27 @@ def main():
         plt.close() # Đóng figure để giải phóng RAM cho Epoch tiếp theo
         print(f"Đã lưu Confusion Matrix tại: {cm_path}")
 
-        # Ghi log vào TensorBoard
-        writer.add_scalars('Loss/Compare', {'Train': train_loss, 'Val': val_loss}, epoch)
-        writer.add_scalar('F1/Dev', dev_f1, epoch)
+        # Cập nhật logic patience trước khi đóng gói checkpoint
+        if dev_f1 > best_f1:
+            best_f1 = dev_f1
+            patience = 0
+            print("--> Dev F1 improved. Saved best model.")
+            
+            # Chỉ lưu best_ckpt khi có cải thiện
+            best_checkpoint = {
+                "epoch": epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "scheduler_state_dict": scheduler.state_dict(),
+                "best_f1": best_f1,
+                "patience": patience
+            }
+            torch.save(best_checkpoint, best_ckpt)
+        else:
+            patience += 1
+            print(f"--> Patience: {patience}/{config.PATIENCE}")
 
+        # Tạo checkpoint mới với giá trị patience ĐÃ CẬP NHẬT
         checkpoint = {
             "epoch": epoch,
             "model_state_dict": model.state_dict(),
@@ -265,30 +295,12 @@ def main():
             "patience": patience
         }
 
-        # save last checkpoint
+        # Lưu last_ckpt sau khi đã tính toán xong patience
         torch.save(checkpoint, last_ckpt)
-
-        # save best checkpoint
-        if dev_f1 > best_f1:
-
-            best_f1 = dev_f1
-            patience = 0
-
-            checkpoint["best_f1"] = best_f1
-            checkpoint["patience"] = patience
-            torch.save(checkpoint, best_ckpt)
-
-            print("Saved best model")
-
-        else:
-            patience += 1
-            print(f"--> Patience: {patience}/{config.PATIENCE}")
 
         if patience >= config.PATIENCE:
             print("Early stopping")
             break
-    # Đóng writer khi training xong
-    writer.close()
-
+        
 if __name__ == "__main__":
     main()

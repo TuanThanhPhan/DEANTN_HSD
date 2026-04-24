@@ -18,7 +18,7 @@ from models.visobert_model import ViSoBERTModel
 
 def plot_confusion_matrix(y_true, y_pred, model_type, split):
     cm = confusion_matrix(y_true, y_pred)
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(4, 4))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
                 xticklabels=["Bình thường", "Gây hấn", "Tiêu cực"],
                 yticklabels=["Bình thường", "Gây hấn", "Tiêu cực"])
